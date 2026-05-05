@@ -91,7 +91,7 @@ def ensure_history_store() -> None:
         MAPPING_TEMPLATE_FILE.write_text("{}", encoding="utf-8")
     if not PORTFOLIO_STATE_FILE.exists():
         PORTFOLIO_STATE_FILE.write_text(
-            json.dumps({"cash": 5000.0, "positions": {}}, indent=2),
+            json.dumps({"cash": 5000.0, "positions": {}, "rebuild_initial_cash": 10000.0}, indent=2),
             encoding="utf-8",
         )
 
@@ -176,7 +176,8 @@ def load_portfolio_state() -> Dict[str, object]:
     positions = state.get("positions", {})
     if not isinstance(positions, dict):
         positions = {}
-    return {"cash": cash, "positions": positions}
+    rebuild_initial_cash = float(state.get("rebuild_initial_cash", 10000.0))
+    return {"cash": cash, "positions": positions, "rebuild_initial_cash": rebuild_initial_cash}
 
 
 def save_portfolio_state(state: Dict[str, object]) -> None:
@@ -586,13 +587,8 @@ def backtest_monthly_strategies(
                 fee_bps=fee_bps,
                 slippage_bps=slippage_bps,
             )
-            sell_qty = min(va_exec.estimated_quantity, va_units)
-            gross_sell = sell_qty * price
-            sell_fee = gross_sell * max(fee_bps, 0.0) / 10000.0
-            sell_slippage = gross_sell * max(slippage_bps, 0.0) / 10000.0
-            net_sell_cash = gross_sell - sell_fee - sell_slippage
-            va_units -= sell_qty
-            va_cash += max(net_sell_cash, 0.0)
+            va_units -= min(va_exec.estimated_quantity, va_units)
+            va_cash += max(va_exec.executable_amount, 0.0)
         else:
             pass
         va_port = va_cash + va_units * price
@@ -640,13 +636,8 @@ def backtest_monthly_strategies(
                 fee_bps=fee_bps,
                 slippage_bps=slippage_bps,
             )
-            rb_sell_qty = min(rb_exec.estimated_quantity, rb_units)
-            rb_gross_sell = rb_sell_qty * price
-            rb_sell_fee = rb_gross_sell * max(fee_bps, 0.0) / 10000.0
-            rb_sell_slippage = rb_gross_sell * max(slippage_bps, 0.0) / 10000.0
-            rb_net_sell_cash = rb_gross_sell - rb_sell_fee - rb_sell_slippage
-            rb_units -= rb_sell_qty
-            rb_cash += max(rb_net_sell_cash, 0.0)
+            rb_units -= min(rb_exec.estimated_quantity, rb_units)
+            rb_cash += max(rb_exec.executable_amount, 0.0)
         rb_port = rb_cash + rb_units * price
 
         records.append(
@@ -868,6 +859,7 @@ def main() -> None:
     portfolio_state = st.session_state.portfolio_state
     portfolio_positions = portfolio_state.get("positions", {})
     current_position_qty = float(portfolio_positions.get("BTC-USD", 0.0))
+    rebuild_initial_cash = float(portfolio_state.get("rebuild_initial_cash", 10000.0))
 
     with st.sidebar:
         st.subheader("Terminal Controls")
@@ -892,16 +884,21 @@ def main() -> None:
         if sync_col1.button("Sync State", use_container_width=True):
             new_positions = dict(portfolio_positions)
             new_positions[ticker] = float(manual_position_qty)
-            st.session_state.portfolio_state = {"cash": float(available_cash), "positions": new_positions}
+            st.session_state.portfolio_state = {
+                "cash": float(available_cash),
+                "positions": new_positions,
+                "rebuild_initial_cash": float(rebuild_initial_cash),
+            }
             save_portfolio_state(st.session_state.portfolio_state)
             st.success("Portfolio state synced to local store.")
             st.rerun()
         if sync_col2.button("Rebuild from Ledger", use_container_width=True):
             ledger_for_rebuild = load_trade_history()
             rebuilt = rebuild_portfolio_state_from_ledger(
-                initial_cash=initial_capital,
+                initial_cash=float(rebuild_initial_cash),
                 ledger_df=ledger_for_rebuild,
             )
+            rebuilt["rebuild_initial_cash"] = float(rebuild_initial_cash)
             st.session_state.portfolio_state = rebuilt
             save_portfolio_state(rebuilt)
             st.success("Portfolio state rebuilt from local ledger.")
@@ -921,6 +918,15 @@ def main() -> None:
             step=100.0,
         )
         st.caption("Cross-Asset Universe: BTC, TSLA, QQQ, CSI300, GLD")
+        st.caption(f"Rebuild Initial Cash Baseline: ${rebuild_initial_cash:,.2f}")
+
+    working_positions = dict(portfolio_positions)
+    working_positions[ticker] = float(manual_position_qty)
+    working_portfolio_state = {
+        "cash": float(available_cash),
+        "positions": working_positions,
+        "rebuild_initial_cash": float(rebuild_initial_cash),
+    }
 
     va = calculate_va_signal(
         initial_capital=initial_capital,
@@ -963,8 +969,8 @@ def main() -> None:
         action=selected_action,
         request_amount=selected_amount,
         price=mark_price if not np.isnan(mark_price) else 0.0,
-        available_cash=float(portfolio_state.get("cash", 0.0)),
-        position_qty=float(st.session_state.portfolio_state.get("positions", {}).get(ticker, 0.0)),
+        available_cash=float(working_portfolio_state.get("cash", 0.0)),
+        position_qty=float(working_portfolio_state.get("positions", {}).get(ticker, 0.0)),
         fee_bps=fee_bps,
         slippage_bps=slippage_bps,
     )
@@ -1005,7 +1011,7 @@ def main() -> None:
                 st.warning("Current order cannot be executed under portfolio constraints.")
             if yes_col.button("Yes, Executed", use_container_width=True, disabled=not allow_execute):
                 updated_portfolio = apply_execution_to_portfolio(
-                    state=st.session_state.portfolio_state,
+                    state=working_portfolio_state,
                     ticker=ticker,
                     action=selected_action,
                     exec_estimate=exec_estimate,
@@ -1024,7 +1030,7 @@ def main() -> None:
                         "exec_quantity": round(exec_estimate.estimated_quantity, 8),
                         "fee_amount": round(exec_estimate.fee_amount, 4),
                         "slippage_amount": round(exec_estimate.slippage_amount, 4),
-                        "available_cash": round(float(portfolio_state.get("cash", 0.0)), 2),
+                        "available_cash": round(float(working_portfolio_state.get("cash", 0.0)), 2),
                         "portfolio_cash_after": round(float(updated_portfolio.get("cash", 0.0)), 2),
                         "portfolio_position_after": round(
                             float(updated_portfolio.get("positions", {}).get(ticker, 0.0)),
