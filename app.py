@@ -587,10 +587,12 @@ def backtest_monthly_strategies(
                 slippage_bps=slippage_bps,
             )
             sell_qty = min(va_exec.estimated_quantity, va_units)
-            gross_sell = sell_qty * price
-            costs = gross_sell * (max(fee_bps, 0.0) + max(slippage_bps, 0.0)) / 10000.0
+            qty_ratio = (
+                sell_qty / va_exec.estimated_quantity if va_exec.estimated_quantity > 0 else 0.0
+            )
+            net_sell_cash = va_exec.executable_amount * qty_ratio
             va_units -= sell_qty
-            va_cash += max(gross_sell - costs, 0.0)
+            va_cash += max(net_sell_cash, 0.0)
         else:
             pass
         va_port = va_cash + va_units * price
@@ -639,10 +641,12 @@ def backtest_monthly_strategies(
                 slippage_bps=slippage_bps,
             )
             rb_sell_qty = min(rb_exec.estimated_quantity, rb_units)
-            rb_gross_sell = rb_sell_qty * price
-            rb_costs = rb_gross_sell * (max(fee_bps, 0.0) + max(slippage_bps, 0.0)) / 10000.0
+            rb_qty_ratio = (
+                rb_sell_qty / rb_exec.estimated_quantity if rb_exec.estimated_quantity > 0 else 0.0
+            )
+            rb_net_sell_cash = rb_exec.executable_amount * rb_qty_ratio
             rb_units -= rb_sell_qty
-            rb_cash += max(rb_gross_sell - rb_costs, 0.0)
+            rb_cash += max(rb_net_sell_cash, 0.0)
         rb_port = rb_cash + rb_units * price
 
         records.append(
