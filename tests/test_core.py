@@ -44,6 +44,9 @@ def test_backtest_monthly_strategies_output():
         monthly_target_growth=300,
         dca_amount=500,
         target_weight=0.5,
+        monthly_budget=500,
+        fee_bps=10,
+        slippage_bps=5,
     )
     assert not out.empty
     assert set(out.columns) == {"VA", "DCA", "REBALANCE"}

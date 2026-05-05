@@ -4,6 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 import json
+import io
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -17,12 +19,21 @@ DEFAULT_ASSETS = ["BTC-USD", "TSLA", "QQQ", "000300.SS", "GLD"]
 HISTORY_DIR = Path("data")
 HISTORY_FILE = HISTORY_DIR / "trade_history.csv"
 MAPPING_TEMPLATE_FILE = HISTORY_DIR / "mapping_templates.json"
+PORTFOLIO_STATE_FILE = HISTORY_DIR / "portfolio_state.json"
 LEDGER_COLUMNS = [
     "timestamp",
     "ticker",
     "strategy",
     "action",
     "amount",
+    "exec_price",
+    "exec_quantity",
+    "fee_amount",
+    "slippage_amount",
+    "available_cash",
+    "portfolio_cash_after",
+    "portfolio_position_after",
+    "order_status",
     "confidence_level_pct",
     "expected_value_pct",
     "note",
@@ -33,6 +44,14 @@ LEDGER_ALIASES = {
     "strategy": ["strategy", "model", "plan"],
     "action": ["action", "side", "order_side", "trade_action"],
     "amount": ["amount", "value", "order_value", "size", "notional"],
+    "exec_price": ["exec_price", "price", "fill_price", "execution_price"],
+    "exec_quantity": ["exec_quantity", "quantity", "qty", "filled_qty"],
+    "fee_amount": ["fee_amount", "fee", "commission"],
+    "slippage_amount": ["slippage_amount", "slippage"],
+    "available_cash": ["available_cash", "cash", "cash_balance"],
+    "portfolio_cash_after": ["portfolio_cash_after", "cash_after"],
+    "portfolio_position_after": ["portfolio_position_after", "position_after", "qty_after"],
+    "order_status": ["order_status", "status", "execution_status"],
     "confidence_level_pct": ["confidence_level_pct", "confidence", "confidence_pct"],
     "expected_value_pct": ["expected_value_pct", "ev", "ev_pct", "expected_value"],
     "note": ["note", "remark", "memo", "comment"],
@@ -55,12 +74,26 @@ class StrategySignal:
     note: str
 
 
+@dataclass
+class ExecutionEstimate:
+    executable_amount: float
+    estimated_quantity: float
+    fee_amount: float
+    slippage_amount: float
+    status: str
+
+
 def ensure_history_store() -> None:
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     if not HISTORY_FILE.exists():
         pd.DataFrame(columns=LEDGER_COLUMNS).to_csv(HISTORY_FILE, index=False)
     if not MAPPING_TEMPLATE_FILE.exists():
         MAPPING_TEMPLATE_FILE.write_text("{}", encoding="utf-8")
+    if not PORTFOLIO_STATE_FILE.exists():
+        PORTFOLIO_STATE_FILE.write_text(
+            json.dumps({"cash": 5000.0, "positions": {}}, indent=2),
+            encoding="utf-8",
+        )
 
 
 def append_trade_history(record: Dict[str, object]) -> None:
@@ -130,6 +163,57 @@ def save_mapping_templates(templates: Dict[str, Dict[str, Optional[str]]]) -> No
         json.dumps(templates, ensure_ascii=True, indent=2),
         encoding="utf-8",
     )
+
+
+def load_portfolio_state() -> Dict[str, object]:
+    ensure_history_store()
+    try:
+        raw = PORTFOLIO_STATE_FILE.read_text(encoding="utf-8")
+        state = json.loads(raw) if raw.strip() else {}
+    except Exception:  # noqa: BLE001
+        state = {}
+    cash = float(state.get("cash", 5000.0))
+    positions = state.get("positions", {})
+    if not isinstance(positions, dict):
+        positions = {}
+    return {"cash": cash, "positions": positions}
+
+
+def save_portfolio_state(state: Dict[str, object]) -> None:
+    ensure_history_store()
+    PORTFOLIO_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def rebuild_portfolio_state_from_ledger(initial_cash: float, ledger_df: pd.DataFrame) -> Dict[str, object]:
+    cash = float(initial_cash)
+    positions: Dict[str, float] = {}
+    if ledger_df.empty:
+        return {"cash": cash, "positions": positions}
+
+    ordered = ledger_df.copy()
+    if "timestamp" in ordered.columns:
+        ordered = ordered.sort_values("timestamp", ascending=True)
+
+    for _, row in ordered.iterrows():
+        ticker = str(row.get("ticker", "")).strip()
+        if not ticker:
+            continue
+        action = str(row.get("action", "")).strip()
+        amount = float(row.get("amount", 0.0) or 0.0)
+        fee = float(row.get("fee_amount", 0.0) or 0.0)
+        slip = float(row.get("slippage_amount", 0.0) or 0.0)
+        qty = float(row.get("exec_quantity", 0.0) or 0.0)
+        pos = float(positions.get(ticker, 0.0))
+
+        if action in {"BUY", "DCA_BUY"}:
+            cash -= amount + fee + slip
+            pos += qty
+        elif action in {"SELL_TO_LOCK_PROFIT", "SELL_TO_REBALANCE"}:
+            cash += amount
+            pos -= qty
+        positions[ticker] = max(pos, 0.0)
+
+    return {"cash": float(cash), "positions": positions}
 
 
 def apply_terminal_theme() -> None:
@@ -285,6 +369,70 @@ def calculate_rebalance_signal(
     )
 
 
+def estimate_execution(
+    action: str,
+    request_amount: float,
+    price: float,
+    available_cash: float,
+    position_qty: float,
+    fee_bps: float,
+    slippage_bps: float,
+) -> ExecutionEstimate:
+    gross = max(request_amount, 0.0)
+    fee_rate = max(fee_bps, 0.0) / 10000.0
+    slip_rate = max(slippage_bps, 0.0) / 10000.0
+    total_cost_rate = 1 + fee_rate + slip_rate
+
+    if action in {"BUY", "DCA_BUY"}:
+        max_affordable = available_cash / total_cost_rate if total_cost_rate > 0 else 0.0
+        executable = min(gross, max_affordable)
+        status = "FILLED" if executable >= gross else "PARTIAL_CASH_LIMIT"
+        fee = executable * fee_rate
+        slip = executable * slip_rate
+        qty = executable / price if price > 0 else 0.0
+        return ExecutionEstimate(executable, qty, fee, slip, status)
+
+    if action in {"SELL_TO_LOCK_PROFIT", "SELL_TO_REBALANCE"}:
+        max_sell_notional = max(position_qty, 0.0) * price if price > 0 else 0.0
+        executable = min(gross, max_sell_notional)
+        if executable <= 0:
+            return ExecutionEstimate(0.0, 0.0, 0.0, 0.0, "REJECTED_NO_POSITION")
+        status = "FILLED" if executable >= gross else "PARTIAL_POSITION_LIMIT"
+        fee = executable * fee_rate
+        slip = executable * slip_rate
+        net_sell = max(executable - fee - slip, 0.0)
+        qty = executable / price if price > 0 else 0.0
+        return ExecutionEstimate(net_sell, qty, fee, slip, status)
+
+    return ExecutionEstimate(0.0, 0.0, 0.0, 0.0, "SKIPPED")
+
+
+def apply_execution_to_portfolio(
+    state: Dict[str, object],
+    ticker: str,
+    action: str,
+    exec_estimate: ExecutionEstimate,
+    price: float,
+) -> Dict[str, object]:
+    cash = float(state.get("cash", 0.0))
+    positions = dict(state.get("positions", {}))
+    qty = float(positions.get(ticker, 0.0))
+
+    if action in {"BUY", "DCA_BUY"} and exec_estimate.executable_amount > 0 and price > 0:
+        gross_spend = (
+            exec_estimate.executable_amount + exec_estimate.fee_amount + exec_estimate.slippage_amount
+        )
+        cash = max(cash - gross_spend, 0.0)
+        qty += exec_estimate.estimated_quantity
+    elif action in {"SELL_TO_LOCK_PROFIT", "SELL_TO_REBALANCE"} and exec_estimate.estimated_quantity > 0:
+        sell_qty = min(exec_estimate.estimated_quantity, qty)
+        qty -= sell_qty
+        cash += exec_estimate.executable_amount
+
+    positions[ticker] = float(max(qty, 0.0))
+    return {"cash": float(cash), "positions": positions}
+
+
 def max_drawdown(close: pd.Series) -> float:
     rolling_max = close.cummax()
     drawdown = close / rolling_max - 1
@@ -386,6 +534,9 @@ def backtest_monthly_strategies(
     monthly_target_growth: float,
     dca_amount: float,
     target_weight: float,
+    monthly_budget: float,
+    fee_bps: float,
+    slippage_bps: float,
 ) -> pd.DataFrame:
     monthly_close = history["Close"].resample("ME").last().dropna()
     if len(monthly_close) < 8:
@@ -401,6 +552,10 @@ def backtest_monthly_strategies(
     rb_cash = initial_capital
 
     for i, (_, price) in enumerate(monthly_close.items(), start=1):
+        va_cash += max(monthly_budget, 0.0)
+        dca_cash += max(monthly_budget, 0.0)
+        rb_cash += max(monthly_budget, 0.0)
+
         va_port = va_cash + va_units * price
         va_signal = calculate_va_signal(
             initial_capital=initial_capital,
@@ -408,19 +563,50 @@ def backtest_monthly_strategies(
             execution_month=i,
             current_asset_value=va_port,
         )
-        va_flow = va_signal.amount if va_signal.action == "BUY" else -va_signal.amount
-        if va_flow >= 0:
-            va_cash -= va_flow
-            va_units += va_flow / price if price > 0 else 0
+        if va_signal.action == "BUY":
+            va_exec = estimate_execution(
+                action="BUY",
+                request_amount=va_signal.amount,
+                price=price,
+                available_cash=va_cash,
+                position_qty=va_units,
+                fee_bps=fee_bps,
+                slippage_bps=slippage_bps,
+            )
+            gross_spend = va_exec.executable_amount + va_exec.fee_amount + va_exec.slippage_amount
+            va_cash -= gross_spend
+            va_units += va_exec.estimated_quantity
+        elif va_signal.action == "SELL_TO_LOCK_PROFIT":
+            va_exec = estimate_execution(
+                action="SELL_TO_LOCK_PROFIT",
+                request_amount=va_signal.amount,
+                price=price,
+                available_cash=va_cash,
+                position_qty=va_units,
+                fee_bps=fee_bps,
+                slippage_bps=slippage_bps,
+            )
+            sell_qty = min(va_exec.estimated_quantity, va_units)
+            gross_sell = sell_qty * price
+            costs = gross_sell * (max(fee_bps, 0.0) + max(slippage_bps, 0.0)) / 10000.0
+            va_units -= sell_qty
+            va_cash += max(gross_sell - costs, 0.0)
         else:
-            sell_amt = min(abs(va_flow), va_units * price)
-            va_units -= sell_amt / price if price > 0 else 0
-            va_cash += sell_amt
+            pass
         va_port = va_cash + va_units * price
 
-        dca_flow = max(dca_amount, 0.0)
-        dca_cash -= dca_flow
-        dca_units += dca_flow / price if price > 0 else 0
+        dca_exec = estimate_execution(
+            action="BUY",
+            request_amount=max(dca_amount, 0.0),
+            price=price,
+            available_cash=dca_cash,
+            position_qty=dca_units,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
+        )
+        dca_gross_spend = dca_exec.executable_amount + dca_exec.fee_amount + dca_exec.slippage_amount
+        dca_cash -= dca_gross_spend
+        dca_units += dca_exec.estimated_quantity
         dca_port = dca_cash + dca_units * price
 
         rb_port = rb_cash + rb_units * price
@@ -429,15 +615,34 @@ def backtest_monthly_strategies(
             target_asset_weight=target_weight,
             current_asset_value=rb_units * price,
         )
-        rb_flow = rb_signal.amount if rb_signal.action == "BUY" else -rb_signal.amount
-        if rb_flow >= 0:
-            spend = min(rb_flow, rb_cash)
-            rb_cash -= spend
-            rb_units += spend / price if price > 0 else 0
-        else:
-            sell_amt = min(abs(rb_flow), rb_units * price)
-            rb_units -= sell_amt / price if price > 0 else 0
-            rb_cash += sell_amt
+        if rb_signal.action == "BUY":
+            rb_exec = estimate_execution(
+                action="BUY",
+                request_amount=rb_signal.amount,
+                price=price,
+                available_cash=rb_cash,
+                position_qty=rb_units,
+                fee_bps=fee_bps,
+                slippage_bps=slippage_bps,
+            )
+            rb_spend = rb_exec.executable_amount + rb_exec.fee_amount + rb_exec.slippage_amount
+            rb_cash -= rb_spend
+            rb_units += rb_exec.estimated_quantity
+        elif rb_signal.action == "SELL_TO_REBALANCE":
+            rb_exec = estimate_execution(
+                action="SELL_TO_REBALANCE",
+                request_amount=rb_signal.amount,
+                price=price,
+                available_cash=rb_cash,
+                position_qty=rb_units,
+                fee_bps=fee_bps,
+                slippage_bps=slippage_bps,
+            )
+            rb_sell_qty = min(rb_exec.estimated_quantity, rb_units)
+            rb_gross_sell = rb_sell_qty * price
+            rb_costs = rb_gross_sell * (max(fee_bps, 0.0) + max(slippage_bps, 0.0)) / 10000.0
+            rb_units -= rb_sell_qty
+            rb_cash += max(rb_gross_sell - rb_costs, 0.0)
         rb_port = rb_cash + rb_units * price
 
         records.append(
@@ -469,6 +674,74 @@ def backtest_metrics(equity_curve: pd.Series) -> Dict[str, float]:
     }
 
 
+def build_backtest_markdown_report(
+    ticker: str,
+    strategy_mode: str,
+    assumptions: Dict[str, float],
+    metrics_df: pd.DataFrame,
+) -> str:
+    lines = [
+        "# Backtest Report",
+        "",
+        f"- Generated At: {datetime.now().isoformat(timespec='seconds')}",
+        f"- Ticker: {ticker}",
+        f"- Active Strategy View: {strategy_mode}",
+        "",
+        "## Assumptions",
+        f"- Initial Capital: ${assumptions['initial_capital']:,.2f}",
+        f"- Monthly Budget Injection: ${assumptions['monthly_budget']:,.2f}",
+        f"- Monthly Target Growth: ${assumptions['monthly_target_growth']:,.2f}",
+        f"- DCA Amount: ${assumptions['dca_amount']:,.2f}",
+        f"- Target Weight: {assumptions['target_weight']:.2%}",
+        f"- Fee: {assumptions['fee_bps']:.2f} bps",
+        f"- Slippage: {assumptions['slippage_bps']:.2f} bps",
+        "",
+        "## Strategy Metrics",
+        "",
+        "| Strategy | Final Value ($) | Total Return (%) | Annualized Return (%) | Annualized Vol (%) | Sharpe-Like | Max Drawdown (%) |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for _, row in metrics_df.iterrows():
+        lines.append(
+            "| "
+            f"{row['Strategy']} | "
+            f"{row['Final Value ($)']:.2f} | "
+            f"{row['Total Return (%)']:.2f} | "
+            f"{row['Annualized Return (%)']:.2f} | "
+            f"{row['Annualized Vol (%)']:.2f} | "
+            f"{row['Sharpe-Like']:.2f} | "
+            f"{row['Max Drawdown (%)']:.2f} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Notes",
+            "- This report includes cash constraints and fee/slippage assumptions.",
+            "- Results are for research only, not financial advice.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def build_snapshot_zip(
+    ticker: str,
+    assumptions: Dict[str, float],
+    ledger_df: pd.DataFrame,
+    metrics_df: pd.DataFrame,
+    forward_plan_df: pd.DataFrame,
+    report_md: str,
+) -> bytes:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{ticker}_assumptions_{timestamp}.json", json.dumps(assumptions, indent=2))
+        zf.writestr(f"{ticker}_ledger_{timestamp}.csv", ledger_df.to_csv(index=False))
+        zf.writestr(f"{ticker}_metrics_{timestamp}.csv", metrics_df.to_csv(index=False))
+        zf.writestr(f"{ticker}_forward_plan_{timestamp}.csv", forward_plan_df.to_csv(index=False))
+        zf.writestr(f"{ticker}_backtest_report_{timestamp}.md", report_md)
+    return buf.getvalue()
+
+
 def generate_forward_plan(
     strategy_mode: str,
     execution_month: int,
@@ -477,6 +750,7 @@ def generate_forward_plan(
     initial_capital: float,
     dca_amount: float,
     target_weight: float,
+    monthly_budget: float,
 ) -> pd.DataFrame:
     rows = []
     for step in range(1, horizon_months + 1):
@@ -500,6 +774,7 @@ def generate_forward_plan(
                 "Month(T)": month_t,
                 "Planned Action": action,
                 "Planned Amount ($)": amount,
+                "Budget Injection ($)": max(monthly_budget, 0.0),
                 "Note": note,
             }
         )
@@ -584,12 +859,52 @@ def main() -> None:
         st.session_state.raw_import_df = None
     if "mapping_selection" not in st.session_state:
         st.session_state.mapping_selection = {}
+    if "portfolio_state" not in st.session_state:
+        st.session_state.portfolio_state = load_portfolio_state()
+    portfolio_state = st.session_state.portfolio_state
+    portfolio_positions = portfolio_state.get("positions", {})
+    current_position_qty = float(portfolio_positions.get("BTC-USD", 0.0))
 
     with st.sidebar:
         st.subheader("Terminal Controls")
         ticker = st.text_input("Target Ticker", value="BTC-USD").strip().upper()
+        current_position_qty = float(portfolio_positions.get(ticker, 0.0))
         strategy_mode = st.selectbox("Execution Strategy", ["VA", "DCA", "REBALANCE"])
         initial_capital = st.number_input("Initial Capital ($)", min_value=0.0, value=10000.0, step=100.0)
+        available_cash = st.number_input(
+            "Available Cash ($)",
+            min_value=0.0,
+            value=float(portfolio_state.get("cash", 5000.0)),
+            step=100.0,
+        )
+        manual_position_qty = st.number_input(
+            f"Current Position Qty ({ticker})",
+            min_value=0.0,
+            value=current_position_qty,
+            step=0.001,
+            format="%.6f",
+        )
+        sync_col1, sync_col2 = st.columns(2)
+        if sync_col1.button("Sync State", use_container_width=True):
+            new_positions = dict(portfolio_positions)
+            new_positions[ticker] = float(manual_position_qty)
+            st.session_state.portfolio_state = {"cash": float(available_cash), "positions": new_positions}
+            save_portfolio_state(st.session_state.portfolio_state)
+            st.success("Portfolio state synced to local store.")
+            st.rerun()
+        if sync_col2.button("Rebuild from Ledger", use_container_width=True):
+            ledger_for_rebuild = load_trade_history()
+            rebuilt = rebuild_portfolio_state_from_ledger(
+                initial_cash=initial_capital,
+                ledger_df=ledger_for_rebuild,
+            )
+            st.session_state.portfolio_state = rebuilt
+            save_portfolio_state(rebuilt)
+            st.success("Portfolio state rebuilt from local ledger.")
+            st.rerun()
+        monthly_budget = st.number_input("Monthly Budget Injection ($)", min_value=0.0, value=500.0, step=10.0)
+        fee_bps = st.number_input("Fee (bps)", min_value=0.0, value=10.0, step=1.0)
+        slippage_bps = st.number_input("Slippage (bps)", min_value=0.0, value=5.0, step=1.0)
         monthly_target = st.number_input("Monthly Target Growth ($)", min_value=0.0, value=500.0, step=10.0)
         execution_month = st.number_input("Execution Month (T)", min_value=1, value=12, step=1)
         dca_amount = st.number_input("DCA Monthly Amount ($)", min_value=0.0, value=500.0, step=10.0)
@@ -617,7 +932,7 @@ def main() -> None:
         selected_amount = va.amount
         selected_note = f"VA Target Value: ${va.target_value:,.2f}"
     elif strategy_mode == "DCA":
-        selected_action = dca_signal.action
+        selected_action = "DCA_BUY"
         selected_amount = dca_signal.amount
         selected_note = dca_signal.note
     else:
@@ -636,16 +951,32 @@ def main() -> None:
             "zscore_50": np.nan,
             "max_drawdown_pct": np.nan,
         }
+        mark_price = np.nan
+    else:
+        mark_price = float(target_stats.get("close", np.nan))
+
+    exec_estimate = estimate_execution(
+        action=selected_action,
+        request_amount=selected_amount,
+        price=mark_price if not np.isnan(mark_price) else 0.0,
+        available_cash=float(portfolio_state.get("cash", 0.0)),
+        position_qty=float(st.session_state.portfolio_state.get("positions", {}).get(ticker, 0.0)),
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+    )
 
     c1, c2, c3 = st.columns(3)
     c1.metric(
         "Required Action Amount ($)",
         f"{selected_amount:,.2f}",
-        delta=f"{strategy_mode}: {selected_action}",
+        delta=f"{strategy_mode}: {selected_action} [{exec_estimate.status}]",
     )
     c2.metric("Asset Confidence Level (%)", f"{target_stats['confidence_level_pct']:.2f}")
     c3.metric("Expected Value (%)", f"{target_stats['expected_value_pct']:.2f}")
-    st.caption(selected_note)
+    st.caption(
+        f"{selected_note} | Executable: ${exec_estimate.executable_amount:,.2f} | "
+        f"Fee+Slippage: ${(exec_estimate.fee_amount + exec_estimate.slippage_amount):,.2f}"
+    )
 
     exec_col1, exec_col2 = st.columns([1, 3])
     if exec_col1.button("Confirm Execution", use_container_width=True):
@@ -658,16 +989,44 @@ def main() -> None:
             st.write(f"Strategy: `{strategy_mode}`")
             st.write(f"Action: `{selected_action}`")
             st.write(f"Amount: `${selected_amount:,.2f}`")
+            st.write(f"Estimated Fill Quantity: `{exec_estimate.estimated_quantity:,.6f}`")
+            st.write(
+                f"Estimated Costs (fee+slippage): `${(exec_estimate.fee_amount + exec_estimate.slippage_amount):,.2f}`"
+            )
+            st.write(f"Execution Status: `{exec_estimate.status}`")
             st.write("Mark this order as executed?")
             yes_col, no_col = st.columns(2)
-            if yes_col.button("Yes, Executed", use_container_width=True):
+            allow_execute = exec_estimate.status not in {"REJECTED_NO_POSITION", "SKIPPED"}
+            if not allow_execute:
+                st.warning("Current order cannot be executed under portfolio constraints.")
+            if yes_col.button("Yes, Executed", use_container_width=True, disabled=not allow_execute):
+                updated_portfolio = apply_execution_to_portfolio(
+                    state=st.session_state.portfolio_state,
+                    ticker=ticker,
+                    action=selected_action,
+                    exec_estimate=exec_estimate,
+                    price=mark_price if not np.isnan(mark_price) else 0.0,
+                )
+                st.session_state.portfolio_state = updated_portfolio
+                save_portfolio_state(updated_portfolio)
                 append_trade_history(
                     {
                         "timestamp": datetime.now().isoformat(timespec="seconds"),
                         "ticker": ticker,
                         "strategy": strategy_mode,
                         "action": selected_action,
-                        "amount": round(selected_amount, 2),
+                        "amount": round(exec_estimate.executable_amount, 2),
+                        "exec_price": mark_price if not np.isnan(mark_price) else np.nan,
+                        "exec_quantity": round(exec_estimate.estimated_quantity, 8),
+                        "fee_amount": round(exec_estimate.fee_amount, 4),
+                        "slippage_amount": round(exec_estimate.slippage_amount, 4),
+                        "available_cash": round(float(portfolio_state.get("cash", 0.0)), 2),
+                        "portfolio_cash_after": round(float(updated_portfolio.get("cash", 0.0)), 2),
+                        "portfolio_position_after": round(
+                            float(updated_portfolio.get("positions", {}).get(ticker, 0.0)),
+                            8,
+                        ),
+                        "order_status": exec_estimate.status,
                         "confidence_level_pct": (
                             float(target_stats["confidence_level_pct"])
                             if not np.isnan(target_stats["confidence_level_pct"])
@@ -787,6 +1146,9 @@ def main() -> None:
         if tpl_col1.button("Apply Template", use_container_width=True):
             if selected_template != "<NONE>":
                 st.session_state.mapping_selection = templates[selected_template]
+                for target_col in LEDGER_COLUMNS:
+                    selected_col = templates[selected_template].get(target_col)
+                    st.session_state[f"map_{target_col}"] = selected_col if selected_col else "<EMPTY>"
                 st.success(f"Template `{selected_template}` loaded.")
                 st.rerun()
             else:
@@ -897,9 +1259,12 @@ def main() -> None:
         initial_capital=initial_capital,
         dca_amount=dca_amount,
         target_weight=target_weight,
+        monthly_budget=monthly_budget,
     )
     st.dataframe(
-        forward_plan_df.style.format({"Planned Amount ($)": "{:,.2f}"}),
+        forward_plan_df.style.format(
+            {"Planned Amount ($)": "{:,.2f}", "Budget Injection ($)": "{:,.2f}"}
+        ),
         use_container_width=True,
     )
 
@@ -913,6 +1278,9 @@ def main() -> None:
             monthly_target_growth=monthly_target,
             dca_amount=dca_amount,
             target_weight=target_weight,
+            monthly_budget=monthly_budget,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
         )
         st.line_chart(bt_df)
 
@@ -942,6 +1310,53 @@ def main() -> None:
                     "Max Drawdown (%)": "{:.2f}",
                 }
             ),
+            use_container_width=True,
+        )
+
+        assumptions = {
+            "initial_capital": float(initial_capital),
+            "monthly_budget": float(monthly_budget),
+            "monthly_target_growth": float(monthly_target),
+            "dca_amount": float(dca_amount),
+            "target_weight": float(target_weight),
+            "fee_bps": float(fee_bps),
+            "slippage_bps": float(slippage_bps),
+        }
+        report_md = build_backtest_markdown_report(
+            ticker=ticker,
+            strategy_mode=strategy_mode,
+            assumptions=assumptions,
+            metrics_df=bt_metrics_df,
+        )
+        export_col1, export_col2 = st.columns(2)
+        export_col1.download_button(
+            label="Export Backtest Metrics (CSV)",
+            data=bt_metrics_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"{ticker}_backtest_metrics.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        export_col2.download_button(
+            label="Export Backtest Report (Markdown)",
+            data=report_md.encode("utf-8"),
+            file_name=f"{ticker}_backtest_report.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+
+        snapshot_zip = build_snapshot_zip(
+            ticker=ticker,
+            assumptions=assumptions,
+            ledger_df=history_df,
+            metrics_df=bt_metrics_df,
+            forward_plan_df=forward_plan_df,
+            report_md=report_md,
+        )
+        st.download_button(
+            label="Export Full Snapshot Package (ZIP)",
+            data=snapshot_zip,
+            file_name=f"{ticker}_snapshot_package.zip",
+            mime="application/zip",
             use_container_width=True,
         )
     except Exception as exc:  # noqa: BLE001
