@@ -1,79 +1,68 @@
-# Multi-Asset VA & Macro Alpha Terminal
+<div align="center">
 
-A production-ready Streamlit terminal for multi-asset systematic investing workflows.
+# Omni-Asset Quant Terminal
 
-This project turns discretionary DCA/VA decisions into a reproducible closed loop:
-**signal generation -> constrained execution -> ledger recording -> portfolio state update -> backtest/report/snapshot export**.
+### Multi-asset systematic investing — one closed loop.
 
-Core coverage:
-- Value Averaging (VA), DCA, and Rebalance execution
-- Statistical confidence and expected value (EV)
-- Cross-asset macro benchmarking (BTC, TSLA, QQQ, 000300.SS, GLD)
-- Monthly strategy backtest with realistic assumptions
+**Signal → execution → ledger → state → backtest**
 
-## Community & Governance
+[![Organization](https://img.shields.io/badge/LASZLO--Quantification-public-FFB24D?style=for-the-badge&logo=github&logoColor=0B0D10)](https://github.com/LASZLO-Quantification)
+[![Stack](https://img.shields.io/badge/Stack-Streamlit_·_Python-0B0D10?style=for-the-badge&logo=python&logoColor=FFB24D)](https://streamlit.io)
+[![License](https://img.shields.io/badge/License-MIT-15181D?style=for-the-badge)](LICENSE)
 
-- Contributing Guide: [`CONTRIBUTING.md`](CONTRIBUTING.md)
-- Security Policy: [`SECURITY.md`](SECURITY.md)
-- Bug Reports: [GitHub Issues](../../issues)
-- Pull Requests: [GitHub Pull Requests](../../pulls)
+<sub>A public satellite of <a href="https://github.com/LASZLO-Quantification">LASZLO Quantification</a> · Not financial advice</sub>
+
+</div>
+
+---
+
+## What it is
+
+A **production-ready Streamlit terminal** for multi-asset systematic workflows.
+
+Discretionary DCA and value-averaging become an operator loop you can **replay, export, and defend**:
+
+```text
+signal generation → constrained execution → ledger → portfolio state → backtest / snapshot
+```
+
+**Coverage:** Value Averaging (VA) · DCA · rebalance · cross-asset macro (BTC, TSLA, QQQ, 000300.SS, GLD).
+
+> Sister project to the private [LASZLO](https://github.com/LASZLO-Quantification) on-chain engine — same discipline, traditional-asset surface. See [public projects index](https://github.com/LASZLO-Quantification/.github/tree/main/docs/projects).
+
+---
 
 ## Features
 
-- **Execution Engine**: VA, DCA, Rebalance signals with actionable buy/sell amounts.
-- **Execution Controls**: cash-constrained execution, fee/slippage estimation, fill quantity preview.
-- **Stat Engine**: 50/200 SMA distance, Z-score, RSI, upside/downside estimation, confidence score, EV.
-- **Macro Panel**: cross-asset comparison for confidence and EV with chart + table.
-- **Backtest Panel**: monthly simulation and metrics (return, vol, max drawdown, Sharpe-like).
-- **Backtest Realism**: monthly budget injection and transaction cost assumptions.
-- **Ledger & State Loop**: local execution ledger, portfolio cash/position persistence, rebuild state from ledger.
-- **Import/Export Workflow**: drag-drop ledger import, mapping templates, CSV export, Markdown report export, ZIP snapshot package.
-- **Resilient Data Fetching**: retry + backoff for temporary market data failures.
+| Module | What you get |
+|--------|----------------|
+| **Execution** | VA / DCA / rebalance signals with actionable sizes; cash constraints, fees, slippage preview |
+| **Stats** | SMA distance, Z-score, RSI, upside/downside, confidence, EV |
+| **Macro** | Cross-asset confidence & EV — chart + table |
+| **Backtest** | Monthly simulation — return, vol, max drawdown, Sharpe-like; budget injection & costs |
+| **Ledger** | Local execution log, portfolio persistence, rebuild from ledger |
+| **I/O** | CSV import/export, Markdown reports, ZIP snapshot packages |
 
-## Quick Start (Recommended)
+---
 
-Use Python module invocation to avoid PATH conflicts:
+## Quick start
 
 ```bash
 python -m streamlit run app.py
 ```
 
-If port `8501` is busy:
+Port busy? `python -m streamlit run app.py --server.port 8502`
 
-```bash
-python -m streamlit run app.py --server.port 8502
+**One command:**
+
+```powershell
+.\run.ps1          # Windows
+./run.sh           # macOS / Linux
 ```
 
-## One-Command Startup Scripts
+**Docker:** `docker compose up --build` → http://localhost:8501
 
-- Windows PowerShell:
-  ```powershell
-  .\run.ps1
-  ```
-- macOS/Linux:
-  ```bash
-  chmod +x run.sh
-  ./run.sh
-  ```
-
-Both scripts:
-- create `.venv` if needed
-- install dependencies
-- run `python -m streamlit run app.py`
-
-## Manual Setup
-
-```bash
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
-
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-python -m streamlit run app.py
-```
+---
 
 ## Development
 
@@ -83,37 +72,41 @@ pytest -q
 python -m py_compile app.py
 ```
 
-## Docker
+| Doc | Link |
+|-----|------|
+| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Security | [SECURITY.md](SECURITY.md) |
+| Issues | [GitHub Issues](../../issues) |
 
-```bash
-docker compose up --build
-```
+---
 
-Then open `http://localhost:8501`.
+## Structure
 
-## Project Structure
+| Path | Role |
+|------|------|
+| `app.py` | Main Streamlit app |
+| `tests/` | Core quant logic unit tests |
+| `.github/workflows/ci.yml` | CI |
+| `run.ps1` / `run.sh` | Cross-platform bootstrap |
 
-- `app.py` - main Streamlit app
-- `requirements.txt` - runtime dependencies
-- `requirements-dev.txt` - test/lint dependencies
-- `tests/` - unit tests for core quant logic
-- `.github/workflows/ci.yml` - CI pipeline
-- `run.ps1` / `run.sh` - cross-platform startup scripts
-- `Dockerfile` / `docker-compose.yml` - containerized run
+---
 
 ## Troubleshooting
 
-- **`streamlit run app.py` points to old Anaconda path**  
-  Use:
-  ```bash
-  python -m streamlit run app.py
-  ```
-- **Port in use (`8501`)**
-  ```bash
-  python -m streamlit run app.py --server.port 8502
-  ```
+**`streamlit` resolves to old Anaconda** → use `python -m streamlit run app.py`
+
+**Port 8501 in use** → `--server.port 8502`
+
+---
 
 ## Disclaimer
 
-This project is for research and educational use only.  
-Not financial advice. Use at your own risk.
+Research and education only. **Not financial advice.** Use at your own risk.
+
+---
+
+<div align="center">
+
+**LASZLO Quantification** · *Measurable loops, explicit constraints*
+
+</div>
