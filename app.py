@@ -880,6 +880,38 @@ def render_macro_chart(macro_df: pd.DataFrame) -> None:
     st.plotly_chart(fig, width="stretch")
 
 
+def render_backtest_chart(backtest_df: pd.DataFrame) -> None:
+    chart_df = (
+        backtest_df.rename_axis("Date")
+        .reset_index()
+        .melt(id_vars="Date", var_name="Strategy", value_name="Portfolio Value ($)")
+    )
+    fig = px.line(
+        chart_df,
+        x="Date",
+        y="Portfolio Value ($)",
+        color="Strategy",
+        color_discrete_map={
+            "VA": "#2563eb",
+            "DCA": "#16a34a",
+            "REBALANCE": "#d97706",
+        },
+    )
+    fig.update_traces(line_width=2.5)
+    fig.update_layout(
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font_color="#111827",
+        hovermode="x unified",
+        legend_title_text="",
+        legend={"orientation": "h", "x": 0, "y": 1.02, "yanchor": "bottom"},
+        margin={"l": 12, "r": 12, "t": 48, "b": 12},
+        xaxis_title="",
+    )
+    fig.update_yaxes(tickprefix="$", separatethousands=True)
+    st.plotly_chart(fig, width="stretch")
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Omni-Asset Quant Terminal",
@@ -1355,7 +1387,7 @@ def main() -> None:
             fee_bps=fee_bps,
             slippage_bps=slippage_bps,
         )
-        st.line_chart(bt_df)
+        render_backtest_chart(bt_df)
 
         metric_rows = []
         for col in bt_df.columns:
