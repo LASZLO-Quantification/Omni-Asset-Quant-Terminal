@@ -7,6 +7,7 @@ from app import (
     calculate_va_signal,
     compute_rsi,
     estimate_execution,
+    execution_is_actionable,
     rebuild_portfolio_state_from_ledger,
 )
 
@@ -71,8 +72,42 @@ def test_estimate_execution_respects_cash_and_costs():
     )
 
     assert estimate.status == "PARTIAL_CASH_LIMIT"
+    assert execution_is_actionable(estimate)
     assert estimate.executable_amount < 5000
     assert estimate.executable_amount + estimate.fee_amount + estimate.slippage_amount == pytest.approx(5000)
+
+
+@pytest.mark.parametrize("available_cash", [0, -100])
+def test_estimate_execution_rejects_buy_without_cash(available_cash):
+    estimate = estimate_execution(
+        action="BUY",
+        request_amount=7000,
+        price=100,
+        available_cash=available_cash,
+        position_qty=0,
+        fee_bps=10,
+        slippage_bps=5,
+    )
+
+    assert estimate.status == "REJECTED_NO_CASH"
+    assert estimate.executable_amount == 0
+    assert estimate.estimated_quantity == 0
+    assert not execution_is_actionable(estimate)
+
+
+def test_estimate_execution_skips_zero_request():
+    estimate = estimate_execution(
+        action="BUY",
+        request_amount=0,
+        price=100,
+        available_cash=5000,
+        position_qty=0,
+        fee_bps=10,
+        slippage_bps=5,
+    )
+
+    assert estimate.status == "SKIPPED"
+    assert not execution_is_actionable(estimate)
 
 
 def test_rebuild_portfolio_state_replays_net_cash_and_position():

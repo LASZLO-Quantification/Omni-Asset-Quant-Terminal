@@ -409,17 +409,22 @@ def estimate_execution(
     slippage_bps: float,
 ) -> ExecutionEstimate:
     gross = max(request_amount, 0.0)
+    if gross <= 0 or not np.isfinite(price) or price <= 0:
+        return ExecutionEstimate(0.0, 0.0, 0.0, 0.0, "SKIPPED")
+
     fee_rate = max(fee_bps, 0.0) / 10000.0
     slip_rate = max(slippage_bps, 0.0) / 10000.0
     total_cost_rate = 1 + fee_rate + slip_rate
 
     if action in {"BUY", "DCA_BUY"}:
-        max_affordable = available_cash / total_cost_rate if total_cost_rate > 0 else 0.0
+        max_affordable = max(available_cash, 0.0) / total_cost_rate
         executable = min(gross, max_affordable)
+        if executable <= 0:
+            return ExecutionEstimate(0.0, 0.0, 0.0, 0.0, "REJECTED_NO_CASH")
         status = "FILLED" if executable >= gross else "PARTIAL_CASH_LIMIT"
         fee = executable * fee_rate
         slip = executable * slip_rate
-        qty = executable / price if price > 0 else 0.0
+        qty = executable / price
         return ExecutionEstimate(executable, qty, fee, slip, status)
 
     if action in {"SELL_TO_LOCK_PROFIT", "SELL_TO_REBALANCE"}:
@@ -435,6 +440,14 @@ def estimate_execution(
         return ExecutionEstimate(net_sell, qty, fee, slip, status)
 
     return ExecutionEstimate(0.0, 0.0, 0.0, 0.0, "SKIPPED")
+
+
+def execution_is_actionable(estimate: ExecutionEstimate) -> bool:
+    return (
+        estimate.status in {"FILLED", "PARTIAL_CASH_LIMIT", "PARTIAL_POSITION_LIMIT"}
+        and estimate.executable_amount > 0
+        and estimate.estimated_quantity > 0
+    )
 
 
 def apply_execution_to_portfolio(
@@ -1033,7 +1046,7 @@ def main() -> None:
         f"Fee+Slippage: ${(exec_estimate.fee_amount + exec_estimate.slippage_amount):,.2f}"
     )
 
-    allow_execute = exec_estimate.status not in {"REJECTED_NO_POSITION", "SKIPPED"}
+    allow_execute = execution_is_actionable(exec_estimate)
     exec_col1, exec_col2 = st.columns([1, 3])
     if exec_col1.button(
         "Confirm Execution",
