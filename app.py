@@ -222,23 +222,24 @@ def apply_terminal_theme() -> None:
         """
         <style>
             .stApp {
-                background: linear-gradient(180deg, #f8f8f6 0%, #f1f1ee 100%);
+                background: #f3f5f6;
                 color: #1f2937;
             }
             .block-container {
-                padding-top: 1.2rem;
+                max-width: 1480px;
+                padding-top: 1rem;
                 padding-bottom: 2rem;
             }
             [data-testid="stSidebar"] {
-                background: #efefea;
-                border-right: 1px solid #dfdfd8;
+                background: #e9edef;
+                border-right: 1px solid #d6dce0;
             }
             [data-testid="stMetric"] {
                 background: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 12px;
+                border: 1px solid #d9dfe3;
+                border-radius: 6px;
                 padding: 12px 14px;
-                box-shadow: 0 1px 2px rgba(17, 24, 39, 0.06);
+                box-shadow: none;
             }
             [data-testid="stMetricValue"] {
                 color: #111827;
@@ -248,18 +249,46 @@ def apply_terminal_theme() -> None:
                 color: #6b7280;
             }
             .stDataFrame, .stTable, .stAlert {
-                border: 1px solid #e5e7eb;
-                border-radius: 10px;
+                border: 1px solid #d9dfe3;
+                border-radius: 6px;
                 background: #ffffff;
             }
             h1, h2, h3 {
                 color: #111827;
-                letter-spacing: 0.2px;
+                letter-spacing: 0;
+            }
+            h1 {
+                font-size: 2rem !important;
+                line-height: 1.15 !important;
+                margin-bottom: 0.25rem !important;
+            }
+            [data-testid="stSidebar"] [data-testid="stExpander"] {
+                border: 1px solid #d6dce0;
+                border-radius: 6px;
+                background: rgba(255, 255, 255, 0.44);
+            }
+            .stButton > button, .stDownloadButton > button {
+                border-radius: 6px;
+            }
+            .stButton > button[kind="primary"] {
+                border-color: #111827;
+                background: #111827;
+                color: #ffffff;
+            }
+            .stButton > button[kind="primary"]:hover {
+                border-color: #d89a24;
+                background: #f7b73d;
+                color: #111827;
             }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_product_header() -> None:
+    st.title("Omni-Asset Quant Terminal")
+    st.caption("RESEARCH MODE / LOCAL LEDGER / NO BROKER CONNECTION")
 
 
 def fetch_price_history_with_retry(
@@ -835,17 +864,17 @@ def render_macro_chart(macro_df: pd.DataFrame) -> None:
         font_color="#111827",
         legend_title_text="",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="VA & Macro Alpha Terminal",
+        page_title="Omni-Asset Quant Terminal",
         page_icon=":chart_with_upwards_trend:",
         layout="wide",
     )
     apply_terminal_theme()
-    st.title("Multi-Asset Value Averaging (VA) & Macro Alpha Terminal")
+    render_product_header()
     if "show_exec_dialog" not in st.session_state:
         st.session_state.show_exec_dialog = False
     if "imported_ledger_df" not in st.session_state:
@@ -862,63 +891,79 @@ def main() -> None:
     rebuild_initial_cash = float(portfolio_state.get("rebuild_initial_cash", 10000.0))
 
     with st.sidebar:
-        st.subheader("Terminal Controls")
+        st.subheader("Research Setup")
         ticker = st.text_input("Target Ticker", value="BTC-USD").strip().upper()
         current_position_qty = float(portfolio_positions.get(ticker, 0.0))
         strategy_mode = st.selectbox("Execution Strategy", ["VA", "DCA", "REBALANCE"])
-        initial_capital = st.number_input("Initial Capital ($)", min_value=0.0, value=10000.0, step=100.0)
-        available_cash = st.number_input(
-            "Available Cash ($)",
-            min_value=0.0,
-            value=float(portfolio_state.get("cash", 5000.0)),
-            step=100.0,
-        )
-        manual_position_qty = st.number_input(
-            f"Current Position Qty ({ticker})",
-            min_value=0.0,
-            value=current_position_qty,
-            step=0.001,
-            format="%.6f",
-        )
-        sync_col1, sync_col2 = st.columns(2)
-        if sync_col1.button("Sync State", use_container_width=True):
-            new_positions = dict(portfolio_positions)
-            new_positions[ticker] = float(manual_position_qty)
-            st.session_state.portfolio_state = {
-                "cash": float(available_cash),
-                "positions": new_positions,
-                "rebuild_initial_cash": float(rebuild_initial_cash),
-            }
-            save_portfolio_state(st.session_state.portfolio_state)
-            st.success("Portfolio state synced to local store.")
-            st.rerun()
-        if sync_col2.button("Rebuild from Ledger", use_container_width=True):
-            ledger_for_rebuild = load_trade_history()
-            rebuilt = rebuild_portfolio_state_from_ledger(
-                initial_cash=float(rebuild_initial_cash),
-                ledger_df=ledger_for_rebuild,
+        with st.expander("Portfolio State", expanded=True):
+            available_cash = st.number_input(
+                "Available Cash ($)",
+                min_value=0.0,
+                value=float(portfolio_state.get("cash", 5000.0)),
+                step=100.0,
             )
-            rebuilt["rebuild_initial_cash"] = float(rebuild_initial_cash)
-            st.session_state.portfolio_state = rebuilt
-            save_portfolio_state(rebuilt)
-            st.success("Portfolio state rebuilt from local ledger.")
-            st.rerun()
-        monthly_budget = st.number_input("Monthly Budget Injection ($)", min_value=0.0, value=500.0, step=10.0)
-        fee_bps = st.number_input("Fee (bps)", min_value=0.0, value=10.0, step=1.0)
-        slippage_bps = st.number_input("Slippage (bps)", min_value=0.0, value=5.0, step=1.0)
-        monthly_target = st.number_input("Monthly Target Growth ($)", min_value=0.0, value=500.0, step=10.0)
-        execution_month = st.number_input("Execution Month (T)", min_value=1, value=12, step=1)
-        dca_amount = st.number_input("DCA Monthly Amount ($)", min_value=0.0, value=500.0, step=10.0)
-        total_portfolio_value = st.number_input("Portfolio Total Value ($)", min_value=0.0, value=20000.0, step=100.0)
-        target_weight = st.slider("Target Asset Weight", min_value=0.0, max_value=1.0, value=0.5, step=0.05)
-        current_asset_value = st.number_input(
-            "Current Asset Value ($)",
-            min_value=0.0,
-            value=9000.0,
-            step=100.0,
-        )
-        st.caption("Cross-Asset Universe: BTC, TSLA, QQQ, CSI300, GLD")
-        st.caption(f"Rebuild Initial Cash Baseline: ${rebuild_initial_cash:,.2f}")
+            manual_position_qty = st.number_input(
+                f"Current Position Qty ({ticker})",
+                min_value=0.0,
+                value=current_position_qty,
+                step=0.001,
+                format="%.6f",
+            )
+            sync_col1, sync_col2 = st.columns(2)
+            if sync_col1.button("Sync State", width="stretch"):
+                new_positions = dict(portfolio_positions)
+                new_positions[ticker] = float(manual_position_qty)
+                st.session_state.portfolio_state = {
+                    "cash": float(available_cash),
+                    "positions": new_positions,
+                    "rebuild_initial_cash": float(rebuild_initial_cash),
+                }
+                save_portfolio_state(st.session_state.portfolio_state)
+                st.success("Portfolio state synced to local store.")
+                st.rerun()
+            if sync_col2.button("Rebuild Ledger", width="stretch"):
+                ledger_for_rebuild = load_trade_history()
+                rebuilt = rebuild_portfolio_state_from_ledger(
+                    initial_cash=float(rebuild_initial_cash),
+                    ledger_df=ledger_for_rebuild,
+                )
+                rebuilt["rebuild_initial_cash"] = float(rebuild_initial_cash)
+                st.session_state.portfolio_state = rebuilt
+                save_portfolio_state(rebuilt)
+                st.success("Portfolio state rebuilt from local ledger.")
+                st.rerun()
+            st.caption(f"Rebuild cash baseline: ${rebuild_initial_cash:,.2f}")
+
+        with st.expander("Strategy Parameters", expanded=True):
+            initial_capital = st.number_input(
+                "Initial Capital ($)", min_value=0.0, value=10000.0, step=100.0
+            )
+            monthly_target = st.number_input(
+                "Monthly Target Growth ($)", min_value=0.0, value=500.0, step=10.0
+            )
+            execution_month = st.number_input("Execution Month (T)", min_value=1, value=12, step=1)
+            dca_amount = st.number_input(
+                "DCA Monthly Amount ($)", min_value=0.0, value=500.0, step=10.0
+            )
+            total_portfolio_value = st.number_input(
+                "Portfolio Total Value ($)", min_value=0.0, value=20000.0, step=100.0
+            )
+            target_weight = st.slider(
+                "Target Asset Weight", min_value=0.0, max_value=1.0, value=0.5, step=0.05
+            )
+            current_asset_value = st.number_input(
+                "Current Asset Value ($)", min_value=0.0, value=9000.0, step=100.0
+            )
+
+        with st.expander("Execution Assumptions", expanded=False):
+            monthly_budget = st.number_input(
+                "Monthly Budget Injection ($)", min_value=0.0, value=500.0, step=10.0
+            )
+            fee_bps = st.number_input("Fee (bps)", min_value=0.0, value=10.0, step=1.0)
+            slippage_bps = st.number_input(
+                "Slippage (bps)", min_value=0.0, value=5.0, step=1.0
+            )
+        st.caption("Universe: BTC / TSLA / QQQ / CSI300 / GLD")
 
     working_positions = dict(portfolio_positions)
     working_positions[ticker] = float(manual_position_qty)
@@ -988,8 +1033,14 @@ def main() -> None:
         f"Fee+Slippage: ${(exec_estimate.fee_amount + exec_estimate.slippage_amount):,.2f}"
     )
 
+    allow_execute = exec_estimate.status not in {"REJECTED_NO_POSITION", "SKIPPED"}
     exec_col1, exec_col2 = st.columns([1, 3])
-    if exec_col1.button("Confirm Execution", use_container_width=True):
+    if exec_col1.button(
+        "Confirm Execution",
+        type="primary",
+        width="stretch",
+        disabled=not allow_execute,
+    ):
         st.session_state.show_exec_dialog = True
 
     if st.session_state.show_exec_dialog:
@@ -1006,10 +1057,9 @@ def main() -> None:
             st.write(f"Execution Status: `{exec_estimate.status}`")
             st.write("Mark this order as executed?")
             yes_col, no_col = st.columns(2)
-            allow_execute = exec_estimate.status not in {"REJECTED_NO_POSITION", "SKIPPED"}
             if not allow_execute:
                 st.warning("Current order cannot be executed under portfolio constraints.")
-            if yes_col.button("Yes, Executed", use_container_width=True, disabled=not allow_execute):
+            if yes_col.button("Yes, Executed", width="stretch", disabled=not allow_execute):
                 updated_portfolio = apply_execution_to_portfolio(
                     state=working_portfolio_state,
                     ticker=ticker,
@@ -1053,7 +1103,7 @@ def main() -> None:
                 st.session_state.show_exec_dialog = False
                 st.success("Execution logged to local history table.")
                 st.rerun()
-            if no_col.button("No", use_container_width=True):
+            if no_col.button("No", width="stretch"):
                 st.session_state.show_exec_dialog = False
                 st.rerun()
 
@@ -1093,7 +1143,7 @@ def main() -> None:
                 "RSI": "{:.2f}",
             }
         ),
-        use_container_width=True,
+        width="stretch",
     )
 
     raw_target_df = pd.DataFrame(
@@ -1116,7 +1166,7 @@ def main() -> None:
                 "Max Drawdown (%)": "{:.2f}",
             }
         ),
-        use_container_width=True,
+        width="stretch",
     )
 
     st.markdown("---")
@@ -1153,7 +1203,7 @@ def main() -> None:
             options=template_names,
             index=0,
         )
-        if tpl_col1.button("Apply Template", use_container_width=True):
+        if tpl_col1.button("Apply Template", width="stretch"):
             if selected_template != "<NONE>":
                 st.session_state.mapping_selection = templates[selected_template]
                 for target_col in LEDGER_COLUMNS:
@@ -1181,14 +1231,14 @@ def main() -> None:
             mapping_result[target_col] = None if selected == "<EMPTY>" else selected
 
         action_col1, action_col2 = st.columns(2)
-        if action_col1.button("Apply Mapping to Imported Data", use_container_width=True):
+        if action_col1.button("Apply Mapping to Imported Data", width="stretch"):
             mapped_df = apply_column_mapping(raw_import_df, mapping_result)
             mapped_df = normalize_ledger_dataframe(mapped_df)
             st.session_state.imported_ledger_df = mapped_df
             st.session_state.mapping_selection = mapping_result
             st.success("Column mapping applied. Imported ledger is ready.")
             st.rerun()
-        if action_col2.button("Save Mapping Template", use_container_width=True):
+        if action_col2.button("Save Mapping Template", width="stretch"):
             clean_name = template_save_name.strip()
             if not clean_name:
                 st.warning("Please input a template name.")
@@ -1201,19 +1251,19 @@ def main() -> None:
     imported_ledger_df = st.session_state.imported_ledger_df
     if imported_ledger_df is not None:
         st.markdown("**Imported Ledger Preview**")
-        st.dataframe(imported_ledger_df, use_container_width=True)
+        st.dataframe(imported_ledger_df, width="stretch")
         imp_col1, imp_col2, imp_col3 = st.columns(3)
-        if imp_col1.button("Replace Local Ledger with Imported", use_container_width=True):
+        if imp_col1.button("Replace Local Ledger with Imported", width="stretch"):
             save_trade_history(imported_ledger_df)
             st.success("Local ledger replaced by imported data.")
             st.rerun()
-        if imp_col2.button("Append Imported to Local Ledger", use_container_width=True):
+        if imp_col2.button("Append Imported to Local Ledger", width="stretch"):
             local_df = load_trade_history()
             merged_df = pd.concat([local_df, imported_ledger_df], ignore_index=True)
             save_trade_history(merged_df)
             st.success("Imported rows appended to local ledger.")
             st.rerun()
-        if imp_col3.button("Clear Imported Table", use_container_width=True):
+        if imp_col3.button("Clear Imported Table", width="stretch"):
             st.session_state.imported_ledger_df = None
             st.session_state.raw_import_df = None
             st.success("Imported table cleared.")
@@ -1231,7 +1281,7 @@ def main() -> None:
                     "expected_value_pct": "{:.2f}",
                 }
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
     st.markdown("**Export Ledger**")
@@ -1255,7 +1305,7 @@ def main() -> None:
         data=export_df.to_csv(index=False).encode("utf-8"),
         file_name=export_name,
         mime="text/csv",
-        use_container_width=True,
+        width="stretch",
     )
 
     st.markdown("---")
@@ -1275,7 +1325,7 @@ def main() -> None:
         forward_plan_df.style.format(
             {"Planned Amount ($)": "{:,.2f}", "Budget Injection ($)": "{:,.2f}"}
         ),
-        use_container_width=True,
+        width="stretch",
     )
 
     st.markdown("---")
@@ -1320,7 +1370,7 @@ def main() -> None:
                     "Max Drawdown (%)": "{:.2f}",
                 }
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
         assumptions = {
@@ -1344,14 +1394,14 @@ def main() -> None:
             data=bt_metrics_df.to_csv(index=False).encode("utf-8"),
             file_name=f"{ticker}_backtest_metrics.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
         )
         export_col2.download_button(
             label="Export Backtest Report (Markdown)",
             data=report_md.encode("utf-8"),
             file_name=f"{ticker}_backtest_report.md",
             mime="text/markdown",
-            use_container_width=True,
+            width="stretch",
         )
 
         snapshot_zip = build_snapshot_zip(
@@ -1367,7 +1417,7 @@ def main() -> None:
             data=snapshot_zip,
             file_name=f"{ticker}_snapshot_package.zip",
             mime="application/zip",
-            use_container_width=True,
+            width="stretch",
         )
     except Exception as exc:  # noqa: BLE001
         st.warning(f"Backtest unavailable for {ticker}: {exc}")

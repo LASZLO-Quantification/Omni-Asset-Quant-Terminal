@@ -1,7 +1,14 @@
 import numpy as np
 import pandas as pd
+import pytest
 
-from app import backtest_monthly_strategies, calculate_va_signal, compute_rsi
+from app import (
+    backtest_monthly_strategies,
+    calculate_va_signal,
+    compute_rsi,
+    estimate_execution,
+    rebuild_portfolio_state_from_ledger,
+)
 
 
 def test_calculate_va_signal_buy():
@@ -50,3 +57,49 @@ def test_backtest_monthly_strategies_output():
     )
     assert not out.empty
     assert set(out.columns) == {"VA", "DCA", "REBALANCE"}
+
+
+def test_estimate_execution_respects_cash_and_costs():
+    estimate = estimate_execution(
+        action="BUY",
+        request_amount=7000,
+        price=100,
+        available_cash=5000,
+        position_qty=0,
+        fee_bps=10,
+        slippage_bps=5,
+    )
+
+    assert estimate.status == "PARTIAL_CASH_LIMIT"
+    assert estimate.executable_amount < 5000
+    assert estimate.executable_amount + estimate.fee_amount + estimate.slippage_amount == pytest.approx(5000)
+
+
+def test_rebuild_portfolio_state_replays_net_cash_and_position():
+    ledger = pd.DataFrame(
+        [
+            {
+                "timestamp": "2026-01-01T00:00:00",
+                "ticker": "TEST",
+                "action": "BUY",
+                "amount": 1000,
+                "fee_amount": 1,
+                "slippage_amount": 1,
+                "exec_quantity": 10,
+            },
+            {
+                "timestamp": "2026-02-01T00:00:00",
+                "ticker": "TEST",
+                "action": "SELL_TO_REBALANCE",
+                "amount": 550,
+                "fee_amount": 0.5,
+                "slippage_amount": 0.5,
+                "exec_quantity": 5,
+            },
+        ]
+    )
+
+    state = rebuild_portfolio_state_from_ledger(5000, ledger)
+
+    assert state["cash"] == 4548
+    assert state["positions"]["TEST"] == 5
