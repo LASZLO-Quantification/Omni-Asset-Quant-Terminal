@@ -1,2 +1,0 @@
-timestamp,ticker,strategy,action,amount,confidence_level_pct,expected_value_pct,note
-2026-05-05T22:15:07,BTC-USD,VA,BUY,7000.0,52.37759083026681,-10.817991268903379,"VA Target Value: $16,000.00"

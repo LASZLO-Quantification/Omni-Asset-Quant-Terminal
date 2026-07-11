@@ -1,0 +1,2 @@
+timestamp,ticker,strategy,action,amount,exec_price,exec_quantity,fee_amount,slippage_amount,available_cash,portfolio_cash_after,portfolio_position_after,order_status,confidence_level_pct,expected_value_pct,note
+2026-01-15T10:30:00,BTC-USD,VA,BUY,1000.0,100000.0,0.01,1.0,0.5,5000.0,3998.5,0.01,FILLED,58.2,4.1,Synthetic example only

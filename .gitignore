@@ -13,3 +13,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Local runtime state. Synthetic examples live beside these as *.example.*.
+data/trade_history.csv
+data/mapping_templates.json
+data/portfolio_state.json
