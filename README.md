@@ -106,4 +106,4 @@ Only synthetic examples belong in the repository. See [data/README.md](data/READ
 
 Research and education only. Not financial advice.
 
-A public reference from [Jinstone Labs](https://github.com/LASZLO-Quantification).
+A public reference from [Szigor Research](https://github.com/LASZLO-Quantification).
